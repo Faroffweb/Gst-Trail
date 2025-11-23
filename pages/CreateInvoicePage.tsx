@@ -9,8 +9,9 @@ import Skeleton from '../components/ui/Skeleton';
 import { ArrowLeft } from 'lucide-react';
 
 // This type definition should match the one in InvoicesPage.tsx for prop compatibility
+// Added 'is_guest' to match InvoiceForm definition
 type FullInvoice = Invoice & {
-    customers: Pick<Customer, 'name' | 'billing_address' | 'gst_pan' | 'phone'> | null;
+    customers: Pick<Customer, 'name' | 'billing_address' | 'gst_pan' | 'phone' | 'is_guest'> | null;
     invoice_items: (InvoiceItem & { products: { name: string; hsn_code: string | null; units?: Pick<Unit, 'abbreviation'> | null; } | null })[];
 };
 

@@ -1,16 +1,17 @@
+
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useForm, useFieldArray, SubmitHandler } from 'react-hook-form';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { supabase } from '../hooks/lib/supabase';
 import { Invoice, InvoiceItem, Customer, Product, CustomerInsert, Unit } from '../types';
 import { Input } from './ui/Input';
 import { Button } from './ui/Button';
 import { toast } from './ui/Toaster';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Search, PlusCircle } from 'lucide-react';
 import { formatCurrency } from '../hooks/lib/utils';
 
 type FullInvoice = Invoice & {
-    customers: Pick<Customer, 'name' | 'billing_address' | 'gst_pan' | 'phone'> | null;
+    customers: Pick<Customer, 'name' | 'billing_address' | 'gst_pan' | 'phone' | 'is_guest'> | null;
     invoice_items: (InvoiceItem & { products: { name: string; hsn_code: string | null; units?: Pick<Unit, 'abbreviation'> | null; } | null })[];
 };
 
@@ -21,6 +22,7 @@ interface InvoiceFormProps {
 }
 
 type FormValues = {
+  customer_mode: 'existing' | 'new' | 'guest';
   customer_id: string | null;
   customer_name_display: string;
   invoice_date: string;
@@ -33,6 +35,9 @@ type FormValues = {
     unit_price: number; // pre-tax, calculated
     tax_rate: number;
     inclusive_rate: number; // GST-inclusive, this is what the user types in the "Rate" field
+    unit_display: string; // For display
+    hsn_code: string; // For display
+    original_quantity: number; // To track stock ownership for validation
   }[];
   new_customer_name?: string;
   new_customer_phone?: string;
@@ -65,327 +70,535 @@ const fetchLastInvoiceNumber = async (): Promise<string | null> => {
   return data?.invoice_number || null;
 };
 
-const upsertInvoice = async ({ formData, id }: { formData: Omit<FormValues, 'new_customer_name' | 'new_customer_phone' | 'new_customer_gst_pan' | 'new_customer_billing_address' | 'customer_name_display'>, id?: string }) => {
+const upsertInvoice = async ({ formData, id }: { formData: FormValues, id?: string }) => {
+    let customerId = formData.customer_id;
+
+    if (formData.customer_mode === 'guest') {
+        customerId = null;
+    } else if (formData.customer_mode === 'new') {
+        if (!formData.new_customer_name) throw new Error("Customer name is required for new customers.");
+        
+        const newCustomer: CustomerInsert = {
+            name: formData.new_customer_name,
+            email: null,
+            phone: formData.new_customer_phone || null,
+            gst_pan: formData.new_customer_gst_pan || null,
+            billing_address: formData.new_customer_billing_address || null,
+            is_guest: false
+        };
+        const { data: createdCustomer, error: createError } = await supabase.from('customers').insert(newCustomer).select('id').single();
+        if (createError) throw createError;
+        customerId = createdCustomer.id;
+    } else {
+        // Existing mode
+        if (!customerId) throw new Error("Please select an existing customer.");
+    }
+
     const invoiceData = {
-        customer_id: formData.customer_id,
+        customer_id: customerId,
         invoice_date: formData.invoice_date,
         invoice_number: formData.invoice_number,
-        notes: formData.notes || null,
+        notes: formData.notes,
+        total_amount: 0, // Will be recalculated by trigger or below
     };
-    
-    const itemsToSave = formData.items.map(({ product_name_display, inclusive_rate, ...rest }) => rest);
-    
-    // The total amount is now calculated by a database trigger for accuracy.
-    // We no longer send it from the client.
+
+    // Calculate total for the invoice record
+    let calculatedTotal = 0;
+    formData.items.forEach(item => {
+         // item.inclusive_rate is what user sees.
+         calculatedTotal += (item.quantity * item.inclusive_rate);
+    });
+    invoiceData.total_amount = calculatedTotal;
+
+    let invoiceId = id;
 
     if (id) {
-        // Update
-        const { data: updatedInvoice, error: invoiceError } = await supabase.from('invoices').update(invoiceData).eq('id', id).select('id').single();
-        if (invoiceError) throw invoiceError;
+        const { error } = await supabase.from('invoices').update(invoiceData).eq('id', id);
+        if (error) throw error;
+        
+        // Delete existing items to replace them (simpler than syncing)
         const { error: deleteError } = await supabase.from('invoice_items').delete().eq('invoice_id', id);
         if (deleteError) throw deleteError;
-        const itemsData = itemsToSave.map(item => ({ ...item, invoice_id: id }));
-        const { error: itemsError } = await supabase.from('invoice_items').insert(itemsData);
-        if (itemsError) throw itemsError;
-        return updatedInvoice;
     } else {
-        // Create
-        const { data: newInvoice, error: invoiceError } = await supabase.from('invoices').insert(invoiceData).select('id').single();
-        if (invoiceError) throw invoiceError;
-        const itemsData = itemsToSave.map(item => ({ ...item, invoice_id: newInvoice.id }));
-        const { error: itemsError } = await supabase.from('invoice_items').insert(itemsData);
+        const { data: newInvoice, error } = await supabase.from('invoices').insert(invoiceData).select('id').single();
+        if (error) throw error;
+        invoiceId = newInvoice.id;
+    }
+
+    if (!invoiceId) throw new Error("Failed to get invoice ID");
+
+    const itemsToInsert = formData.items.map(item => ({
+        invoice_id: invoiceId!,
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_price: item.inclusive_rate / (1 + item.tax_rate), // Calculate pre-tax price
+        tax_rate: item.tax_rate
+    }));
+
+    if (itemsToInsert.length > 0) {
+        const { error: itemsError } = await supabase.from('invoice_items').insert(itemsToInsert);
         if (itemsError) throw itemsError;
-        return newInvoice;
     }
 };
 
 const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel }) => {
   const queryClient = useQueryClient();
-  const isEditing = !!invoice;
-  const [customerMode, setCustomerMode] = useState<'existing' | 'new' | 'guest'>(isEditing && !invoice.customer_id ? 'guest' : 'existing');
-  const [activeSuggestionBox, setActiveSuggestionBox] = useState<{ type: 'customer' | 'product', index?: number } | null>(null);
-  const suggestionsRef = useRef<HTMLFormElement>(null);
+  const [customerSuggestionsOpen, setCustomerSuggestionsOpen] = useState(false);
+  const [productSuggestionsOpen, setProductSuggestionsOpen] = useState<{index: number, isOpen: boolean}>({index: -1, isOpen: false});
+  
+  // Refs for clicking outside
+  const customerWrapperRef = useRef<HTMLDivElement>(null);
 
-  const { data: customers, isLoading: isLoadingCustomers } = useQuery({ queryKey: ['customersList'], queryFn: fetchCustomers });
-  const { data: products, isLoading: isLoadingProducts } = useQuery({ queryKey: ['productsListAll'], queryFn: fetchProducts });
-  const { data: lastInvoiceNumber } = useQuery({ queryKey: ['lastInvoiceNumber'], queryFn: fetchLastInvoiceNumber, enabled: !isEditing });
+  const { data: customers } = useQuery({ queryKey: ['customersList'], queryFn: fetchCustomers });
+  const { data: products } = useQuery({ queryKey: ['productsList'], queryFn: fetchProducts });
 
-  const {
-    register,
-    handleSubmit,
-    control,
-    reset,
-    watch,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
+  const { register, control, handleSubmit, watch, setValue, reset, formState: { errors, isSubmitting } } = useForm<FormValues>({
     defaultValues: {
+      customer_mode: 'existing',
       customer_id: null,
       customer_name_display: '',
       invoice_date: new Date().toISOString().split('T')[0],
       invoice_number: '',
       notes: '',
       items: [],
-    },
+      new_customer_name: '',
+      new_customer_phone: '',
+      new_customer_gst_pan: '',
+      new_customer_billing_address: ''
+    }
   });
 
-  const { fields, append, remove, update } = useFieldArray({ control, name: 'items' });
+  const { fields, append, remove, update } = useFieldArray({
+    control,
+    name: "items"
+  });
 
-  useEffect(() => {
-    if (invoice) {
-      setCustomerMode(invoice.customer_id ? 'existing' : 'guest');
-      reset({
-        customer_id: invoice.customer_id,
-        customer_name_display: invoice.customers?.name || '',
-        invoice_date: new Date(invoice.invoice_date).toISOString().split('T')[0],
-        invoice_number: invoice.invoice_number,
-        notes: invoice.notes || '',
-        items: invoice.invoice_items.map(item => ({
-            product_id: item.product_id,
-            product_name_display: item.products?.name || '',
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            tax_rate: item.tax_rate,
-            inclusive_rate: item.unit_price * (1 + item.tax_rate),
-        })),
-      });
-    } else {
-       reset({
-        customer_id: null,
-        customer_name_display: '',
-        invoice_date: new Date().toISOString().split('T')[0],
-        invoice_number: '',
-        notes: '',
-        items: [{ product_id: '', product_name_display: '', quantity: 1, unit_price: 0, tax_rate: 0, inclusive_rate: 0 }],
-      });
-    }
-  }, [invoice, reset]);
+  // Watch for real-time calculations and UI state
+  const watchedItems = watch("items");
+  const customerNameDisplay = watch("customer_name_display");
+  const customerMode = watch("customer_mode");
 
+  // Initialize form
   useEffect(() => {
-    if (isEditing) return;
+    const init = async () => {
+        if (invoice) {
+            const formattedItems = invoice.invoice_items.map(item => ({
+                product_id: item.product_id,
+                product_name_display: item.products?.name || '',
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                tax_rate: item.tax_rate,
+                inclusive_rate: item.unit_price * (1 + item.tax_rate),
+                unit_display: item.products?.units?.abbreviation || '',
+                hsn_code: item.products?.hsn_code || '',
+                original_quantity: item.quantity
+            }));
+            
+            let mode: 'existing' | 'new' | 'guest' = 'existing';
+            if (!invoice.customer_id) {
+                mode = 'guest';
+            }
 
-    if (lastInvoiceNumber) {
-      const matches = lastInvoiceNumber.match(/(\d+)$/);
-      if (matches) {
-        const numberPart = parseInt(matches[0], 10);
-        const prefix = lastInvoiceNumber.substring(0, lastInvoiceNumber.length - matches[0].length);
-        const nextNumber = (numberPart + 1).toString().padStart(matches[0].length, '0');
-        setValue('invoice_number', `${prefix}${nextNumber}`);
-      } else {
-        setValue('invoice_number', `${lastInvoiceNumber}-1`);
-      }
-    } else {
-      // If no invoices exist yet, start with the user-defined format.
-      setValue('invoice_number', 'BTC-001');
-    }
-  }, [lastInvoiceNumber, isEditing, setValue]);
-  
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-        if (suggestionsRef.current && !suggestionsRef.current.contains(event.target as Node)) {
-            setActiveSuggestionBox(null);
+            reset({
+                customer_mode: mode,
+                customer_id: invoice.customer_id,
+                customer_name_display: invoice.customers?.name || '',
+                invoice_date: invoice.invoice_date,
+                invoice_number: invoice.invoice_number,
+                notes: invoice.notes || '',
+                items: formattedItems
+            });
+        } else {
+            const nextNum = await fetchLastInvoiceNumber();
+            let nextInvoiceNum = 'INV-001';
+            if (nextNum) {
+                const parts = nextNum.split('-');
+                if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
+                    const num = parseInt(parts[1]) + 1;
+                    nextInvoiceNum = `${parts[0]}-${num.toString().padStart(3, '0')}`;
+                }
+            }
+            reset({
+                customer_mode: 'existing',
+                customer_id: null,
+                customer_name_display: '',
+                invoice_date: new Date().toISOString().split('T')[0],
+                invoice_number: nextInvoiceNum,
+                notes: '',
+                items: []
+            });
         }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    init();
+  }, [invoice, reset]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (customerWrapperRef.current && !customerWrapperRef.current.contains(event.target as Node)) {
+        setCustomerSuggestionsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
   }, []);
 
-  const watchedItems = watch('items');
-  const customerNameDisplay = watch('customer_name_display');
 
   const filteredCustomers = useMemo(() => {
-    if (!customerNameDisplay || !customers) return [];
-    if (customers.some(c => c.name.toLowerCase() === customerNameDisplay.toLowerCase())) return [];
-    return customers.filter(c => c.name.toLowerCase().includes(customerNameDisplay.toLowerCase()));
-  }, [customerNameDisplay, customers]);
-
-  const handleCustomerSelect = (customer: Pick<Customer, 'id' | 'name'>) => {
-      setValue('customer_id', customer.id);
-      setValue('customer_name_display', customer.name);
-      setActiveSuggestionBox(null);
-  };
-
-  const handleProductSelect = (index: number, product: Product) => {
-    const currentQuantity = watchedItems[index]?.quantity || 1;
-    const inclusiveRate = product.unit_price * (1 + product.tax_rate);
-    update(index, { 
-        product_id: product.id, 
-        product_name_display: product.name, 
-        quantity: currentQuantity, 
-        unit_price: product.unit_price,
-        tax_rate: product.tax_rate,
-        inclusive_rate: inclusiveRate,
-    });
-    setActiveSuggestionBox(null);
-  };
-  
-  const highlightMatch = (text: string, query: string) => {
-    if (!query) return <span>{text}</span>;
-    const matchIndex = text.toLowerCase().indexOf(query.toLowerCase());
-    if (matchIndex === -1) return <span>{text}</span>;
-    const before = text.slice(0, matchIndex);
-    const match = text.slice(matchIndex, matchIndex + query.length);
-    const after = text.slice(matchIndex + query.length);
-    return (<span>{before}<strong className="font-semibold text-slate-900 dark:text-slate-100">{match}</strong>{after}</span>);
-  };
-
-  const totals = useMemo(() => {
-    const subtotal = watchedItems.reduce((acc, item) => acc + (item.quantity * item.unit_price), 0);
-    const tax = watchedItems.reduce((acc, item) => acc + (item.quantity * item.unit_price * item.tax_rate), 0);
-    return { subtotal, tax, grandTotal: subtotal + tax };
-  }, [watchedItems]);
+      if (!customers || !customerNameDisplay) return customers || [];
+      return customers.filter(c => c.name.toLowerCase().includes(customerNameDisplay.toLowerCase()));
+  }, [customers, customerNameDisplay]);
 
   const mutation = useMutation({
     mutationFn: upsertInvoice,
     onSuccess: () => {
       toast(`Invoice ${invoice ? 'updated' : 'created'} successfully!`);
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      // Stock updates happen via DB triggers
+      queryClient.invalidateQueries({ queryKey: ['stock'] }); 
       onSuccess();
     },
-    onError: (error) => toast(`Error: ${error.message}`),
+    onError: (error) => {
+      toast(`Error: ${error.message}`);
+    },
   });
 
-  const onSubmit: SubmitHandler<FormValues> = async (data) => {
-    if (data.items.length === 0 || !data.items.find(item => item.product_id)) {
-        toast('Please add at least one valid item.'); return;
-    }
-    let finalCustomerId: string | null = data.customer_id;
-    if (customerMode === 'existing') {
-        const matchingCustomer = customers?.find(c => c.name.toLowerCase() === data.customer_name_display.toLowerCase());
-        if (!matchingCustomer) { toast('Please select a valid customer from the list.'); return; }
-        finalCustomerId = matchingCustomer.id;
-    } else if (customerMode === 'new') {
-        if (!data.new_customer_name) { toast('New customer name is required.'); return; }
-        const { data: createdCustomer, error } = await supabase.from('customers').insert({ name: data.new_customer_name, phone: data.new_customer_phone || null, gst_pan: data.new_customer_gst_pan || null, billing_address: data.new_customer_billing_address || null, email: null, is_guest: false }).select('id').single();
-        if (error) { toast(`Error creating customer: ${error.message}`); return; }
-        finalCustomerId = createdCustomer.id;
-    } else if (customerMode === 'guest') {
-        finalCustomerId = null;
-    }
-
-    // FIX: Prepare the form data for the mutation by removing temporary fields 
-    // (`customer_name_display`, `new_customer_*`) to match the expected type of `upsertInvoice`.
-    // This also resolves the error caused by an incorrect transformation of the `items` array.
-    // Fix: Replaced the failing destructuring assignment with explicit object creation to resolve binding errors.
-    const formDataForMutation = {
-      customer_id: finalCustomerId,
-      invoice_date: data.invoice_date,
-      invoice_number: data.invoice_number,
-      notes: data.notes,
-      items: data.items,
-    };
-    
-    mutation.mutate({ formData: formDataForMutation, id: invoice?.id });
-  };
-  
-  const customerSection = () => {
-    switch (customerMode) {
-        case 'existing':
-            return (
-                <div className="relative">
-                    <label htmlFor="customer_name_display" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Customer Name</label>
-                    <Input id="customer_name_display" {...register('customer_name_display', { required: 'Please select a customer' })} disabled={isLoadingCustomers} placeholder={isLoadingCustomers ? "Loading customers..." : "Type to search for a customer"} onFocus={() => setActiveSuggestionBox({ type: 'customer' })} autoComplete="off" />
-                    {activeSuggestionBox?.type === 'customer' && filteredCustomers.length > 0 && (
-                        <div className="absolute z-20 w-full mt-1.5 rounded-lg bg-white shadow-xl ring-1 ring-black ring-opacity-5 dark:bg-gray-800 dark:ring-gray-700">
-                            <ul className="max-h-60 overflow-y-auto text-sm p-1">
-                                {filteredCustomers.map(c => <li key={c.id} className="px-3 py-2.5 rounded-md cursor-pointer hover:bg-slate-100 dark:hover:bg-gray-700" onMouseDown={(e) => { e.preventDefault(); handleCustomerSelect(c); }}>{highlightMatch(c.name, customerNameDisplay)}</li>)}
-                            </ul>
-                        </div>
-                    )}
-                    {errors.customer_name_display && <p className="mt-1 text-sm text-red-500">{errors.customer_name_display.message}</p>}
-                </div>
-            );
-        case 'new':
-            return (
-                <div className="p-4 border rounded-md space-y-4 bg-slate-50 dark:bg-slate-700/50">
-                    <h4 className="font-medium">New Customer Details</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div><label htmlFor="new_customer_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Full Name</label><Input id="new_customer_name" {...register('new_customer_name', { required: customerMode === 'new' ? 'Customer name is required.' : false })} />{errors.new_customer_name && <p className="mt-1 text-sm text-red-500">{errors.new_customer_name.message}</p>}</div>
-                        <div><label htmlFor="new_customer_phone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Phone</label><Input id="new_customer_phone" {...register('new_customer_phone')} /></div>
-                        <div>
-                           <label htmlFor="new_customer_gst_pan" className="block text-sm font-medium text-gray-700 dark:text-gray-300">GSTIN / PAN</label>
-                           <Input id="new_customer_gst_pan" {...register('new_customer_gst_pan', {
-                                pattern: {
-                                    value: /^$|^([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})$|^([A-Z]{5}[0-9]{4}[A-Z]{1})$/i,
-                                    message: "Invalid GSTIN or PAN format."
-                                }
-                           })} />
-                           {errors.new_customer_gst_pan && <p className="mt-1 text-sm text-red-500">{errors.new_customer_gst_pan.message}</p>}
-                        </div>
-                        <div className="md:col-span-2"><label htmlFor="new_customer_billing_address" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Billing Address</label><textarea id="new_customer_billing_address" rows={2} className="flex w-full rounded-md border border-slate-300 bg-transparent py-2 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700" {...register('new_customer_billing_address')} /></div>
-                    </div>
-                </div>
-            );
-        case 'guest':
-            return (
-                <div className="p-4 rounded-md bg-slate-100 dark:bg-slate-700/50">
-                    <p className="text-sm text-slate-600 dark:text-slate-300">This invoice will be created without a customer record.</p>
-                </div>
-            );
-        default:
-            return null;
-    }
+  const onSubmit: SubmitHandler<FormValues> = (data) => {
+      if (data.items.length === 0) {
+          toast("Please add at least one item.");
+          return;
+      }
+      mutation.mutate({ formData: data, id: invoice?.id });
   };
 
+  const handleCustomerSelect = (customer: { id: string, name: string }) => {
+      setValue('customer_id', customer.id);
+      setValue('customer_name_display', customer.name);
+      setCustomerSuggestionsOpen(false);
+  };
+
+  const handleProductSelect = (index: number, product: Product) => {
+      const inclusiveRate = product.unit_price * (1 + product.tax_rate);
+      update(index, {
+          product_id: product.id,
+          product_name_display: product.name,
+          quantity: 0, 
+          unit_price: product.unit_price,
+          tax_rate: product.tax_rate,
+          inclusive_rate: parseFloat(inclusiveRate.toFixed(2)),
+          unit_display: product.units?.abbreviation || '',
+          hsn_code: product.hsn_code || '',
+          original_quantity: 0
+      });
+      setProductSuggestionsOpen({index: -1, isOpen: false});
+  };
+
+  // Calculations
+  const totals = useMemo(() => {
+      let subtotal = 0;
+      let cgst = 0;
+      let sgst = 0;
+
+      watchedItems.forEach(item => {
+          const qty = Number(item.quantity) || 0;
+          const inclRate = Number(item.inclusive_rate) || 0;
+          const taxRate = Number(item.tax_rate) || 0;
+
+          const unitPrice = inclRate / (1 + taxRate);
+          const taxableValue = qty * unitPrice;
+          
+          const taxAmount = taxableValue * taxRate;
+          
+          subtotal += taxableValue;
+          cgst += taxAmount / 2;
+          sgst += taxAmount / 2;
+      });
+
+      return {
+          subtotal,
+          cgst,
+          sgst,
+          grandTotal: subtotal + cgst + sgst
+      };
+  }, [watchedItems]);
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" ref={suggestionsRef}>
-      <div className="p-4 border rounded-lg dark:border-gray-700 space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 dark:text-white">Customer</h3>
-        <div className="flex items-center space-x-4">
-            {['existing', 'new', 'guest'].map(mode => (
-              <label key={mode} className="flex items-center capitalize text-sm">
-                  <input type="radio" value={mode} checked={customerMode === mode} onChange={() => setCustomerMode(mode as any)} className="mr-2" /> {mode}
-              </label>
-            ))}
-        </div>
-        {customerSection()}
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label htmlFor="invoice_number" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Invoice Number</label><Input id="invoice_number" {...register('invoice_number', { required: 'Invoice number is required' })} />{errors.invoice_number && <p className="mt-1 text-sm text-red-500">{errors.invoice_number.message}</p>}</div>
-          <div><label htmlFor="invoice_date" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Invoice Date</label><Input id="invoice_date" type="date" {...register('invoice_date', { required: 'Date is required' })}/>{errors.invoice_date && <p className="mt-1 text-sm text-red-500">{errors.invoice_date.message}</p>}</div>
-      </div>
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {/* Header Section */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Customer</label>
+                
+                {/* Customer Mode Radio Buttons */}
+                <div className="flex space-x-4 mb-3">
+                    <label className="inline-flex items-center cursor-pointer">
+                        <input 
+                            type="radio" 
+                            className="form-radio text-blue-600 focus:ring-blue-500" 
+                            value="existing" 
+                            checked={customerMode === 'existing'} 
+                            onChange={() => setValue('customer_mode', 'existing')} 
+                        />
+                        <span className="ml-2 text-sm text-gray-700 dark:text-gray-300">Existing</span>
+                    </label>
+                    <label className="inline-flex items-center cursor-pointer">
+                        <input 
+                            type="radio" 
+                            className="form-radio text-blue-600 focus:ring-blue-500" 
+                            value="new" 
+                            checked={customerMode === 'new'} 
+                            onChange={() => setValue('customer_mode', 'new')} 
+                        />
+                        <span className="ml-2 text-sm text-gray-700 dark:text-gray-300">New</span>
+                    </label>
+                    <label className="inline-flex items-center cursor-pointer">
+                        <input 
+                            type="radio" 
+                            className="form-radio text-blue-600 focus:ring-blue-500" 
+                            value="guest" 
+                            checked={customerMode === 'guest'} 
+                            onChange={() => setValue('customer_mode', 'guest')} 
+                        />
+                        <span className="ml-2 text-sm text-gray-700 dark:text-gray-300">Guest</span>
+                    </label>
+                </div>
 
-      <div className="space-y-2">
-        <h3 className="text-lg font-medium text-gray-900 dark:text-white">Items</h3>
-        <div className="hidden md:grid md:grid-cols-[1fr,110px,110px,110px,110px,40px] gap-x-2 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-t-lg text-sm font-semibold text-slate-600 dark:text-slate-300 text-right"><div className="text-left">Product</div><div>Qty</div><div>Rate (incl. GST)</div><div>Taxable</div><div>Total</div><div></div></div>
-        <div className="border rounded-lg dark:border-gray-700 divide-y dark:divide-gray-700 md:border-t-0 md:rounded-t-none md:divide-y-0">
-          {fields.map((field, index) => {
-             const item = watchedItems[index]; const product = products?.find(p => p.id === item?.product_id); const taxableAmount = (item?.quantity || 0) * (item?.unit_price || 0); const totalAmount = taxableAmount * (1 + (item?.tax_rate || 0)); const productNameQuery = item?.product_name_display || ''; let filteredProducts: Product[] = []; if (productNameQuery && products) { const isExactMatch = products.some(p => p.name.toLowerCase() === productNameQuery.toLowerCase()); if (!isExactMatch) { filteredProducts = products.filter(p => p.name.toLowerCase().includes(productNameQuery.toLowerCase())); }}
-            return (
-              <div key={field.id} className="p-3 md:p-2 grid grid-cols-2 md:grid-cols-[1fr,110px,110px,110px,110px,40px] gap-x-2 gap-y-3 items-start">
-                <div className="col-span-2 md:col-span-1"><label className="text-xs font-medium text-slate-500 md:hidden">Product</label><div className="relative"><Input {...register(`items.${index}.product_name_display`, { required: true })} disabled={isLoadingProducts} placeholder="Type to search..." onFocus={() => setActiveSuggestionBox({ type: 'product', index })} autoComplete="off" />{activeSuggestionBox?.type === 'product' && activeSuggestionBox.index === index && filteredProducts.length > 0 && (<div className="absolute z-20 w-full mt-1.5 rounded-lg bg-white shadow-xl ring-1 ring-black ring-opacity-5 dark:bg-gray-800 dark:ring-gray-700"><ul className="max-h-60 overflow-y-auto text-sm p-1">{filteredProducts.map(p => <li key={p.id} className="px-3 py-2.5 rounded-md cursor-pointer hover:bg-slate-100 dark:hover:bg-gray-700" onMouseDown={(e) => e.preventDefault()} onClick={() => handleProductSelect(index, p)}>{highlightMatch(p.name, productNameQuery)}</li>)}</ul></div>)}{product && <div className="text-xs text-slate-500 mt-1">HSN: {product.hsn_code || 'N/A'} | Tax: {product.tax_rate*100}%</div>}</div></div>
-                <div className="col-span-1"><label className="text-xs font-medium text-slate-500 md:hidden">Qty</label><Input type="number" {...register(`items.${index}.quantity`, { required: true, valueAsNumber: true, min: 1 })} /></div>
-                <div className="col-span-1"><label className="text-xs font-medium text-slate-500 md:hidden">Rate (incl. GST)</label><Input type="number" step="0.01" {...register(`items.${index}.inclusive_rate`, { valueAsNumber: true, validate: v => v >= 0 || 'Rate must be non-negative' })} onChange={(e) => { const newInclusiveRate = parseFloat(e.target.value) || 0; const taxRate = watchedItems[index].tax_rate || 0; const newUnitPrice = newInclusiveRate / (1 + taxRate); setValue(`items.${index}.unit_price`, newUnitPrice); setValue(`items.${index}.inclusive_rate`, newInclusiveRate); }} disabled={!item?.product_id} /></div>
-                <div className="col-span-1"><label className="text-xs font-medium text-slate-500 md:hidden">Taxable</label><Input value={formatCurrency(taxableAmount)} readOnly className="bg-slate-100 dark:bg-slate-700/50"/></div>
-                <div className="col-span-1"><label className="text-xs font-medium text-slate-500 md:hidden">Total</label><Input value={formatCurrency(totalAmount)} readOnly className="bg-slate-100 dark:bg-slate-700/50"/></div>
-                <div className="col-span-2 md:col-span-1 self-center flex-grow flex justify-end"><Button type="button" variant="ghost" size="icon" onClick={() => remove(index)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
-              </div>
-            )
-          })}
-        </div>
-        <Button type="button" variant="outline" onClick={() => append({ product_id: '', product_name_display: '', quantity: 1, unit_price: 0, tax_rate: 0, inclusive_rate: 0 })}>Add Item</Button>
-      </div>
+                {/* Conditional Customer Inputs */}
+                {customerMode === 'existing' && (
+                    <div className="relative" ref={customerWrapperRef}>
+                        <Input 
+                            {...register('customer_name_display')}
+                            placeholder="Type to search customer"
+                            autoComplete="off"
+                            onFocus={() => setCustomerSuggestionsOpen(true)}
+                            onChange={(e) => {
+                                setValue('customer_name_display', e.target.value);
+                                setValue('customer_id', null); // Clear ID on type
+                                setCustomerSuggestionsOpen(true);
+                            }}
+                        />
+                        {customerSuggestionsOpen && (
+                            <div className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-800 border rounded-md shadow-lg max-h-60 overflow-y-auto">
+                                {filteredCustomers.length > 0 ? (
+                                    filteredCustomers.map(c => (
+                                        <div 
+                                            key={c.id} 
+                                            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                                            onClick={() => handleCustomerSelect(c)}
+                                        >
+                                            {c.name}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="p-2 text-gray-500 text-sm">No customers found.</div>
+                                )}
+                            </div>
+                        )}
+                        <input type="hidden" {...register('customer_id')} />
+                        {errors.customer_mode && <p className="text-red-500 text-xs mt-1">Please select a customer.</p>}
+                    </div>
+                )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div><label htmlFor="notes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Notes / Terms</label><textarea id="notes" {...register('notes')} rows={5} className="mt-1 flex w-full rounded-md border border-slate-300 bg-transparent py-2 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:text-slate-50" /></div>
-        <div className="flex justify-end items-end">
-          <div className="w-full max-w-sm space-y-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-              <div className="flex justify-between text-sm"><span className="text-gray-600 dark:text-gray-400">Subtotal:</span><span className="font-medium text-gray-900 dark:text-white">{formatCurrency(totals.subtotal)}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-gray-600 dark:text-gray-400">CGST:</span><span className="font-medium text-gray-900 dark:text-white">{formatCurrency(totals.tax / 2)}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-gray-600 dark:text-gray-400">SGST:</span><span className="font-medium text-gray-900 dark:text-white">{formatCurrency(totals.tax / 2)}</span></div>
-              <div className="flex justify-between text-lg font-bold pt-2 mt-2 border-t dark:border-gray-600"><span className="text-gray-900 dark:text-white">Grand Total:</span><span className="text-gray-900 dark:text-white">{formatCurrency(totals.grandTotal)}</span></div>
-          </div>
+                {customerMode === 'new' && (
+                    <div className="space-y-3 bg-gray-50 dark:bg-gray-800/50 p-3 rounded-md border border-gray-100 dark:border-gray-700">
+                        <Input placeholder="Full Name *" {...register('new_customer_name')} />
+                        <Input placeholder="Phone Number" {...register('new_customer_phone')} />
+                        <Input placeholder="GSTIN / PAN" {...register('new_customer_gst_pan')} />
+                        <Input placeholder="Billing Address" {...register('new_customer_billing_address')} />
+                    </div>
+                )}
+
+                {customerMode === 'guest' && (
+                    <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-md border border-gray-100 dark:border-gray-700 text-sm text-gray-500 italic">
+                        Guest Checkout - No customer details will be saved for future reference.
+                    </div>
+                )}
+            </div>
+            
+            <div className="md:col-span-1 lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4 h-fit">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Invoice Number</label>
+                    <Input {...register('invoice_number', { required: true })} />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Invoice Date</label>
+                    <Input type="date" {...register('invoice_date', { required: true })} />
+                </div>
+            </div>
         </div>
-      </div>
-      
-      <div className="flex justify-end space-x-4 pt-4 border-t dark:border-gray-700">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>Cancel</Button>
-        <Button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Saving...' : (invoice ? 'Update Invoice' : 'Save Invoice')}</Button>
-      </div>
+
+        {/* Items Section */}
+        <div>
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Items</h3>
+            <div className="overflow-x-auto border rounded-lg">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-gray-800">
+                        <tr>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">Product</th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Qty</th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Rate (Incl. GST)</th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Taxable</th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Total</th>
+                            <th className="px-3 py-2 w-10"></th>
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-800">
+                        {fields.map((field, index) => {
+                            const itemValues = watchedItems && watchedItems[index] ? watchedItems[index] : field;
+                            const qty = Number(itemValues.quantity) || 0;
+                            const inclRate = Number(itemValues.inclusive_rate) || 0;
+                            const taxRate = Number(itemValues.tax_rate) || 0;
+                            const unitPrice = inclRate / (1 + taxRate);
+                            const taxable = qty * unitPrice;
+                            const total = qty * inclRate;
+
+                            // Calculate available stock for validation
+                            const selectedProduct = products?.find(p => p.id === itemValues.product_id);
+                            const availableStock = (selectedProduct?.stock_quantity || 0) + (itemValues.original_quantity || 0);
+
+                            return (
+                                <tr key={field.id}>
+                                    <td className="px-3 py-2 relative">
+                                        <Input 
+                                            {...register(`items.${index}.product_name_display` as const, { required: true })}
+                                            placeholder="Search Product"
+                                            autoComplete="off"
+                                            onFocus={() => setProductSuggestionsOpen({index, isOpen: true})}
+                                            onChange={(e) => {
+                                                setValue(`items.${index}.product_name_display`, e.target.value);
+                                                setProductSuggestionsOpen({index, isOpen: true});
+                                            }}
+                                        />
+                                        {productSuggestionsOpen.isOpen && productSuggestionsOpen.index === index && (
+                                            <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border rounded-md shadow-lg max-h-48 overflow-y-auto left-0 top-10">
+                                                {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).map(p => (
+                                                    <div 
+                                                        key={p.id}
+                                                        className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
+                                                        onClick={() => handleProductSelect(index, p)}
+                                                        onMouseDown={(e) => e.preventDefault()} 
+                                                    >
+                                                        <div className="font-medium">{p.name}</div>
+                                                        <div className="text-xs text-gray-500">Stock: {p.stock_quantity}</div>
+                                                    </div>
+                                                ))}
+                                                {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).length === 0 && (
+                                                    <div className="p-2 text-xs text-gray-500">No products found</div>
+                                                )}
+                                            </div>
+                                        )}
+                                        <div className="text-xs text-gray-500 mt-1">
+                                            {watch(`items.${index}.hsn_code`) && `HSN: ${watch(`items.${index}.hsn_code`)} | `}
+                                            Tax: {(taxRate * 100).toFixed(0)}%
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <Input 
+                                            type="number" 
+                                            {...register(`items.${index}.quantity` as const, { 
+                                                valueAsNumber: true, 
+                                                min: { value: 0, message: "Min 0" },
+                                                validate: (value) => {
+                                                    if (!itemValues.product_id) return true;
+                                                    return value <= availableStock || `Max ${availableStock}`;
+                                                }
+                                            })}
+                                            className={errors.items?.[index]?.quantity ? "border-red-500 focus:ring-red-500" : ""}
+                                        />
+                                        {itemValues.product_id && (
+                                            <div className={`text-xs mt-1 font-bold ${errors.items?.[index]?.quantity ? "text-red-600" : "text-red-500"}`}>
+                                               {errors.items?.[index]?.quantity?.message || `Max: ${availableStock}`}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <Input 
+                                            type="number" 
+                                            step="0.01"
+                                            {...register(`items.${index}.inclusive_rate` as const, { valueAsNumber: true, min: 0 })}
+                                        />
+                                    </td>
+                                    <td className="px-3 py-2 align-top pt-4 text-sm">
+                                        {formatCurrency(taxable)}
+                                    </td>
+                                    <td className="px-3 py-2 align-top pt-4 text-sm font-medium">
+                                        {formatCurrency(total)}
+                                    </td>
+                                    <td className="px-3 py-2 align-top text-center pt-3">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => remove(index)}
+                                            className="text-red-500 hover:text-red-700"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+            <Button 
+                type="button" 
+                variant="outline" 
+                onClick={() => append({ 
+                    product_id: '', 
+                    product_name_display: '', 
+                    quantity: 0, 
+                    unit_price: 0, 
+                    tax_rate: 0, 
+                    inclusive_rate: 0,
+                    unit_display: '',
+                    hsn_code: '',
+                    original_quantity: 0
+                })}
+                className="mt-2"
+            >
+                <PlusCircle className="w-4 h-4 mr-2" /> Add Item
+            </Button>
+        </div>
+
+        {/* Footer Section */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Notes / Terms</label>
+                <textarea 
+                    {...register('notes')}
+                    rows={4}
+                    className="flex w-full rounded-md border border-slate-300 bg-transparent py-2 px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-50 dark:focus:ring-slate-400 dark:focus:ring-offset-slate-900 mt-1"
+                />
+            </div>
+            <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
+                 <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Subtotal:</span>
+                        <span className="font-medium">{formatCurrency(totals.subtotal)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">CGST:</span>
+                        <span className="font-medium">{formatCurrency(totals.cgst)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">SGST:</span>
+                        <span className="font-medium">{formatCurrency(totals.sgst)}</span>
+                    </div>
+                    <div className="border-t border-gray-200 dark:border-gray-700 pt-2 mt-2 flex justify-between text-lg font-bold">
+                        <span>Grand Total:</span>
+                        <span>{formatCurrency(totals.grandTotal)}</span>
+                    </div>
+                 </div>
+            </div>
+        </div>
+
+        <div className="flex justify-end space-x-4 border-t pt-4">
+            <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>Cancel</Button>
+            <Button type="submit" disabled={isSubmitting}>
+                {isSubmitting ? 'Saving...' : (invoice ? 'Update Invoice' : 'Create Invoice')}
+            </Button>
+        </div>
     </form>
   );
 };
