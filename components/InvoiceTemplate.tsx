@@ -156,7 +156,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ invoice, companyDetai
                 <div className="signatures">
                     <div className="sign-box">
                         <div className="sign-line"></div>
-                        <p>Authorized Signatory</p>
+                        <p>Computer Generated Invoice</p>
                     </div>
                 </div>
             </div>

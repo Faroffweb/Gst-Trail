@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useForm, useFieldArray, SubmitHandler } from 'react-hook-form';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
@@ -7,7 +6,7 @@ import { Invoice, InvoiceItem, Customer, Product, CustomerInsert, Unit } from '.
 import { Input } from './ui/Input';
 import { Button } from './ui/Button';
 import { toast } from './ui/Toaster';
-import { Trash2, Search, PlusCircle } from 'lucide-react';
+import { Trash2, Search, PlusCircle, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../hooks/lib/utils';
 
 type FullInvoice = Invoice & {
@@ -430,21 +429,22 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
         </div>
 
         {/* Items Section */}
-        <div>
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Items</h3>
-            <div className="overflow-x-auto border rounded-lg">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                    <thead className="bg-gray-50 dark:bg-gray-800">
+        <div className="space-y-4">
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white">Items</h3>
+            
+            <div className="mb-4">
+                <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-700 border-b border-slate-200 dark:border-slate-700">
+                    <thead className="bg-slate-50 dark:bg-slate-800">
                         <tr>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">Product</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Qty</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Rate (Incl. GST)</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Taxable</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Total</th>
-                            <th className="px-3 py-2 w-10"></th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-[40%]">Product</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-[15%]">Qty</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-[15%]">Rate <span className="text-[10px] text-slate-400 normal-case">(Incl. GST)</span></th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider w-[12%]">Taxable</th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider w-[12%]">Total</th>
+                            <th className="px-4 py-3 w-[6%]"></th>
                         </tr>
                     </thead>
-                    <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-800">
+                    <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-slate-700">
                         {fields.map((field, index) => {
                             const itemValues = watchedItems && watchedItems[index] ? watchedItems[index] : field;
                             const qty = Number(itemValues.quantity) || 0;
@@ -459,42 +459,47 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
                             const availableStock = (selectedProduct?.stock_quantity || 0) + (itemValues.original_quantity || 0);
 
                             return (
-                                <tr key={field.id}>
-                                    <td className="px-3 py-2 relative">
-                                        <Input 
-                                            {...register(`items.${index}.product_name_display` as const, { required: true })}
-                                            placeholder="Search Product"
-                                            autoComplete="off"
-                                            onFocus={() => setProductSuggestionsOpen({index, isOpen: true})}
-                                            onChange={(e) => {
-                                                setValue(`items.${index}.product_name_display`, e.target.value);
-                                                setProductSuggestionsOpen({index, isOpen: true});
-                                            }}
-                                        />
-                                        {productSuggestionsOpen.isOpen && productSuggestionsOpen.index === index && (
-                                            <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border rounded-md shadow-lg max-h-48 overflow-y-auto left-0 top-10">
-                                                {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).map(p => (
-                                                    <div 
-                                                        key={p.id}
-                                                        className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
-                                                        onClick={() => handleProductSelect(index, p)}
-                                                        onMouseDown={(e) => e.preventDefault()} 
-                                                    >
-                                                        <div className="font-medium">{p.name}</div>
-                                                        <div className="text-xs text-gray-500">Stock: {p.stock_quantity}</div>
-                                                    </div>
-                                                ))}
-                                                {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).length === 0 && (
-                                                    <div className="p-2 text-xs text-gray-500">No products found</div>
-                                                )}
-                                            </div>
-                                        )}
-                                        <div className="text-xs text-gray-500 mt-1">
-                                            {watch(`items.${index}.hsn_code`) && `HSN: ${watch(`items.${index}.hsn_code`)} | `}
-                                            Tax: {(taxRate * 100).toFixed(0)}%
+                                <tr key={field.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                    <td className="px-4 py-3 align-top">
+                                        <div className="relative">
+                                            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                                            <Input 
+                                                {...register(`items.${index}.product_name_display` as const, { required: true })}
+                                                placeholder="Search Product..."
+                                                className="pl-9"
+                                                autoComplete="off"
+                                                onFocus={() => setProductSuggestionsOpen({index, isOpen: true})}
+                                                onChange={(e) => {
+                                                    setValue(`items.${index}.product_name_display`, e.target.value);
+                                                    setProductSuggestionsOpen({index, isOpen: true});
+                                                }}
+                                            />
+                                            {productSuggestionsOpen.isOpen && productSuggestionsOpen.index === index && (
+                                                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md shadow-xl max-h-60 overflow-y-auto">
+                                                    {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).map(p => (
+                                                        <div 
+                                                            key={p.id}
+                                                            className="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer text-sm flex justify-between items-center"
+                                                            onClick={() => handleProductSelect(index, p)}
+                                                            onMouseDown={(e) => e.preventDefault()} 
+                                                        >
+                                                            <span className="font-medium text-slate-900 dark:text-slate-100">{p.name}</span>
+                                                            <span className="text-xs text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">Stock: {p.stock_quantity}</span>
+                                                        </div>
+                                                    ))}
+                                                    {products?.filter(p => p.name.toLowerCase().includes(watch(`items.${index}.product_name_display`).toLowerCase())).length === 0 && (
+                                                        <div className="p-3 text-xs text-slate-500 text-center">No products found</div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="mt-1.5 flex items-center text-xs text-slate-500 gap-3 pl-1">
+                                            {watch(`items.${index}.hsn_code`) && <span>HSN: {watch(`items.${index}.hsn_code`)}</span>}
+                                            {watch(`items.${index}.hsn_code`) && <span className="w-1 h-1 bg-slate-300 rounded-full"></span>}
+                                            <span>Tax: {(taxRate * 100).toFixed(0)}%</span>
                                         </div>
                                     </td>
-                                    <td className="px-3 py-2 align-top">
+                                    <td className="px-4 py-3 align-top">
                                         <Input 
                                             type="number" 
                                             {...register(`items.${index}.quantity` as const, { 
@@ -508,29 +513,37 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
                                             className={errors.items?.[index]?.quantity ? "border-red-500 focus:ring-red-500" : ""}
                                         />
                                         {itemValues.product_id && (
-                                            <div className={`text-xs mt-1 font-bold ${errors.items?.[index]?.quantity ? "text-red-600" : "text-red-500"}`}>
-                                               {errors.items?.[index]?.quantity?.message || `Max: ${availableStock}`}
+                                            <div className={`text-xs mt-1.5 font-bold flex items-center gap-1 ${errors.items?.[index]?.quantity ? "text-red-600" : "text-red-500"}`}>
+                                               {errors.items?.[index]?.quantity ? (
+                                                   <>
+                                                    <AlertCircle className="w-3 h-3" />
+                                                    {errors.items?.[index]?.quantity?.message || `Max: ${availableStock}`}
+                                                   </>
+                                               ) : (
+                                                   `Max: ${availableStock}`
+                                               )}
                                             </div>
                                         )}
                                     </td>
-                                    <td className="px-3 py-2 align-top">
+                                    <td className="px-4 py-3 align-top">
                                         <Input 
                                             type="number" 
                                             step="0.01"
                                             {...register(`items.${index}.inclusive_rate` as const, { valueAsNumber: true, min: 0 })}
                                         />
                                     </td>
-                                    <td className="px-3 py-2 align-top pt-4 text-sm">
+                                    <td className="px-4 py-3 align-top pt-3 text-sm text-right text-slate-600 dark:text-slate-300 font-medium">
                                         {formatCurrency(taxable)}
                                     </td>
-                                    <td className="px-3 py-2 align-top pt-4 text-sm font-medium">
+                                    <td className="px-4 py-3 align-top pt-3 text-sm text-right text-slate-900 dark:text-white font-semibold">
                                         {formatCurrency(total)}
                                     </td>
-                                    <td className="px-3 py-2 align-top text-center pt-3">
+                                    <td className="px-4 py-3 align-top text-center pt-2">
                                         <button 
                                             type="button" 
                                             onClick={() => remove(index)}
-                                            className="text-red-500 hover:text-red-700"
+                                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+                                            aria-label="Remove Item"
                                         >
                                             <Trash2 className="w-4 h-4" />
                                         </button>
@@ -538,9 +551,17 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
                                 </tr>
                             );
                         })}
+                        {fields.length === 0 && (
+                            <tr>
+                                <td colSpan={6} className="px-4 py-8 text-center text-slate-500 text-sm italic">
+                                    No items added yet. Click below to start adding products.
+                                </td>
+                            </tr>
+                        )}
                     </tbody>
                 </table>
             </div>
+            
             <Button 
                 type="button" 
                 variant="outline" 
@@ -555,9 +576,9 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
                     hsn_code: '',
                     original_quantity: 0
                 })}
-                className="mt-2"
+                className="w-full sm:w-auto border-dashed border-slate-300 hover:border-slate-400 hover:bg-slate-50 text-slate-600"
             >
-                <PlusCircle className="w-4 h-4 mr-2" /> Add Item
+                <PlusCircle className="w-4 h-4 mr-2" /> Add New Item
             </Button>
         </div>
 
@@ -568,34 +589,36 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ invoice, onSuccess, onCancel 
                 <textarea 
                     {...register('notes')}
                     rows={4}
-                    className="flex w-full rounded-md border border-slate-300 bg-transparent py-2 px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-50 dark:focus:ring-slate-400 dark:focus:ring-offset-slate-900 mt-1"
+                    placeholder="Enter notes or payment terms..."
+                    className="flex w-full rounded-md border border-slate-300 bg-transparent py-2 px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-50 dark:focus:ring-slate-400 dark:focus:ring-offset-slate-900 mt-1 resize-none"
                 />
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
-                 <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                        <span className="text-gray-600 dark:text-gray-400">Subtotal:</span>
-                        <span className="font-medium">{formatCurrency(totals.subtotal)}</span>
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-6 rounded-lg border border-slate-100 dark:border-slate-700">
+                 <div className="space-y-3 text-sm">
+                    <div className="flex justify-between items-center">
+                        <span className="text-slate-600 dark:text-slate-400">Subtotal:</span>
+                        <span className="font-medium text-slate-900 dark:text-white">{formatCurrency(totals.subtotal)}</span>
                     </div>
-                    <div className="flex justify-between">
-                        <span className="text-gray-600 dark:text-gray-400">CGST:</span>
-                        <span className="font-medium">{formatCurrency(totals.cgst)}</span>
+                    <div className="flex justify-between items-center">
+                        <span className="text-slate-600 dark:text-slate-400">CGST:</span>
+                        <span className="font-medium text-slate-900 dark:text-white">{formatCurrency(totals.cgst)}</span>
                     </div>
-                    <div className="flex justify-between">
-                        <span className="text-gray-600 dark:text-gray-400">SGST:</span>
-                        <span className="font-medium">{formatCurrency(totals.sgst)}</span>
+                    <div className="flex justify-between items-center">
+                        <span className="text-slate-600 dark:text-slate-400">SGST:</span>
+                        <span className="font-medium text-slate-900 dark:text-white">{formatCurrency(totals.sgst)}</span>
                     </div>
-                    <div className="border-t border-gray-200 dark:border-gray-700 pt-2 mt-2 flex justify-between text-lg font-bold">
-                        <span>Grand Total:</span>
-                        <span>{formatCurrency(totals.grandTotal)}</span>
+                    <div className="h-px bg-slate-200 dark:bg-slate-700 my-2"></div>
+                    <div className="flex justify-between items-center text-lg font-bold">
+                        <span className="text-slate-800 dark:text-slate-100">Grand Total:</span>
+                        <span className="text-blue-600 dark:text-blue-400">{formatCurrency(totals.grandTotal)}</span>
                     </div>
                  </div>
             </div>
         </div>
 
-        <div className="flex justify-end space-x-4 border-t pt-4">
+        <div className="flex justify-end space-x-4 border-t dark:border-slate-700 pt-6">
             <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>Cancel</Button>
-            <Button type="submit" disabled={isSubmitting}>
+            <Button type="submit" disabled={isSubmitting} className="px-8">
                 {isSubmitting ? 'Saving...' : (invoice ? 'Update Invoice' : 'Create Invoice')}
             </Button>
         </div>
