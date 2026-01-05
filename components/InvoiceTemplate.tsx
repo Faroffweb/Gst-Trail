@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { Invoice, InvoiceItem, Customer, Unit, CompanyDetails } from '../types';
 import { formatDate, formatCurrency } from '../hooks/lib/utils';
@@ -39,6 +40,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ invoice, companyDetai
       .panel { width:48%; border:1px solid #ddd; padding:10px; border-radius:6px; font-size: 0.9em; }
       .panel h3 { font-size: 1.1em; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;}
       .panel p { margin: 0; line-height: 1.6; }
+      .customer-name { font-size: 1.15em; font-weight: bold; color: #000; }
       table { width:100%; border-collapse:collapse; margin-bottom:20px; }
       table th, table td { border:1px solid #ddd; padding:6px; text-align:left; font-size:0.8em; }
       table th { background:#f9f9f9; font-weight: bold; }
@@ -48,9 +50,8 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ invoice, companyDetai
       .footer { border-top:1px solid #ddd; margin-top:20px; padding-top:10px; font-size: 0.9em; }
       .footer h3 { font-size: 1.1em; margin-bottom: 10px; }
       .notes { margin-bottom:20px; font-size: 0.9em; }
-      .signatures { display:flex; justify-content:flex-end; margin-top:60px; }
-      .sign-box { width:40%; text-align:center; }
-      .sign-line { border-top:1px solid #000; margin-top:60px; }
+      .signatures { display:flex; justify-content:flex-end; margin-top:30px; }
+      .sign-box { text-align:right; font-style: italic; color: #666; font-size: 0.85em; }
     `;
 
     return (
@@ -79,10 +80,12 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ invoice, companyDetai
                     </div>
                     <div className="panel">
                         <h3>Billed To</h3>
-                        <p><strong>Customer:</strong> {invoice.customers?.name || 'Guest'}<br />
-                        <strong>Phone:</strong> {invoice.customers?.phone || 'N/A'}<br />
-                        <strong>Address:</strong> {invoice.customers?.billing_address || 'N/A'}<br />
-                        <strong>GSTIN / PAN:</strong> {invoice.customers?.gst_pan || 'N/A'}</p>
+                        <p>
+                            <strong>Customer:</strong> <span className="customer-name">{invoice.customers?.name || 'Guest'}</span><br />
+                            <strong>Phone:</strong> {invoice.customers?.phone || 'N/A'}<br />
+                            <strong>Address:</strong> {invoice.customers?.billing_address || 'N/A'}<br />
+                            <strong>GSTIN / PAN:</strong> {invoice.customers?.gst_pan || 'N/A'}
+                        </p>
                     </div>
                 </div>
 
@@ -155,8 +158,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ invoice, companyDetai
 
                 <div className="signatures">
                     <div className="sign-box">
-                        <div className="sign-line"></div>
-                        <p>Computer Generated Invoice</p>
+                        <p>This is a computer generated invoice</p>
                     </div>
                 </div>
             </div>

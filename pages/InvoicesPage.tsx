@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { supabase } from '../hooks/lib/supabase';
@@ -152,7 +153,6 @@ const InvoicesPage: React.FC = () => {
   };
 
   const generateInvoicePDF = (invoice: FullInvoice, companyDetails: CompanyDetails | null) => {
-    // Initialize with explicit options to ensure consistency
     const doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
@@ -166,10 +166,9 @@ const InvoicesPage: React.FC = () => {
     doc.setFont("helvetica");
     const grayColor = "#6b7280";
     const blackColor = "#111827";
-    const borderColor = "#e5e7eb";
+    const borderColor = [200, 200, 200]; // Darker gray for visible boxing
 
     // --- Header ---
-    // Left: Company Name & Slogan
     doc.setTextColor(blackColor);
     doc.setFontSize(20);
     doc.setFont("helvetica", "bold");
@@ -182,7 +181,6 @@ const InvoicesPage: React.FC = () => {
         doc.text(String(companyDetails.slogan), 14, 26);
     }
 
-    // Right: Invoice Label & Details
     doc.setTextColor(grayColor);
     doc.setFontSize(16);
     doc.text("Invoice", pageWidth - 14, 20, { align: "right" });
@@ -198,14 +196,14 @@ const InvoicesPage: React.FC = () => {
 
     // --- Billing Boxes ---
     const boxY = 45;
-    const boxHeight = 45; // Fixed height
-    const boxWidth = (pageWidth - 28 - 10) / 2; // 14 margin left/right, 10 gap
+    const boxHeight = 45; 
+    const boxWidth = (pageWidth - 28 - 10) / 2; 
     const box2X = 14 + boxWidth + 10;
 
-    // Helper to draw box content
     const drawBox = (x: number, y: number, title: string, content: string[]) => {
-        doc.setDrawColor(borderColor);
-        doc.setLineWidth(0.1);
+        // Draw the main border box
+        doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+        doc.setLineWidth(0.2); // Thicker line for "boxing"
         doc.roundedRect(x, y, boxWidth, boxHeight, 2, 2, 'S');
         
         // Title
@@ -213,42 +211,49 @@ const InvoicesPage: React.FC = () => {
         doc.setTextColor(grayColor);
         doc.text(title, x + 4, y + 8);
         
-        // Separator
+        // Separator line
         doc.line(x, y + 12, x + boxWidth, y + 12);
         
         // Content
-        doc.setFontSize(9);
-        doc.setTextColor(blackColor);
         let currentY = y + 18;
         content.forEach(line => {
             if (line) {
-                const lineStr = String(line); // Ensure string
-                // Handle basic bolding convention "Label: Value"
+                const lineStr = String(line);
                 const parts = lineStr.split(':');
                 if (parts.length > 1) {
                     doc.setFont("helvetica", "bold");
+                    doc.setFontSize(9);
+                    doc.setTextColor(blackColor);
                     doc.text(parts[0] + ":", x + 4, currentY);
                     const labelWidth = doc.getTextWidth(parts[0] + ":");
-                    doc.setFont("helvetica", "normal");
-                    // Safety check for undefined parts
+                    
                     const valueText = parts.slice(1).join(':').trim();
+                    // MIRROR CUSTOMER NAME STYLING
+                    if (parts[0].toLowerCase().includes('customer')) {
+                        doc.setFontSize(10.5);
+                        doc.setFont("helvetica", "bold");
+                    } else {
+                        doc.setFontSize(9);
+                        doc.setFont("helvetica", "normal");
+                    }
                     doc.text(valueText, x + 4 + labelWidth + 2, currentY);
                 } else {
+                    doc.setFontSize(9);
+                    doc.setFont("helvetica", "normal");
+                    doc.setTextColor(blackColor);
                     doc.text(lineStr, x + 4, currentY);
                 }
-                currentY += 5;
+                currentY += 6;
             }
         });
     };
 
-    // Billed By Content
     const billedByLines = [
         `Name: ${companyDetails?.name || ''}`,
         `Address: ${companyDetails?.address || ''}`.substring(0, 45) + (companyDetails?.address && companyDetails.address.length > 45 ? '...' : ''),
         `GSTIN: ${companyDetails?.gstin || ''}`
     ];
     
-    // Billed To Content
     const billedToLines = [
         `Customer: ${invoice.customers?.name || 'Guest'}`,
         `Phone: ${invoice.customers?.phone || 'N/A'}`,
@@ -261,7 +266,6 @@ const InvoicesPage: React.FC = () => {
 
     // --- Items Table ---
     const tableBody = invoice.invoice_items.map((item) => {
-        const inclusiveRate = item.unit_price * (1 + item.tax_rate);
         const taxableValue = item.quantity * item.unit_price;
         const taxAmount = taxableValue * item.tax_rate;
         const totalValue = taxableValue + taxAmount;
@@ -271,21 +275,19 @@ const InvoicesPage: React.FC = () => {
             String(item.products?.hsn_code || "-"),
             String(item.quantity),
             String(item.products?.units?.abbreviation || ""),
-            formatNumber(item.unit_price), // Rate (Base Price)
+            formatNumber(item.unit_price * (1 + item.tax_rate)), // Inclusive Rate
             formatNumber(taxableValue),
             `${(item.tax_rate * 100).toFixed(0)}%`,
-            formatNumber(taxAmount / 2), // CGST
-            formatNumber(taxAmount / 2), // SGST
+            formatNumber(taxAmount / 2), 
+            formatNumber(taxAmount / 2), 
             formatNumber(totalValue)
         ];
     });
 
-    // Calculate Totals
     const totalTaxable = invoice.invoice_items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
     const totalTax = invoice.invoice_items.reduce((sum, item) => sum + (item.quantity * item.unit_price * item.tax_rate), 0);
     const grandTotal = totalTaxable + totalTax;
 
-    // Helper to format currency with "Rs." prefix for PDF compatibility
     const formatCurrencyPDF = (amount: number) => `Rs. ${formatNumber(amount)}`;
 
     autoTable(doc, {
@@ -298,17 +300,17 @@ const InvoicesPage: React.FC = () => {
             textColor: [0, 0, 0], 
             fontSize: 8, 
             fontStyle: 'bold',
-            lineWidth: 0.1,
+            lineWidth: 0.2, // Increased grid line width
             lineColor: borderColor
         },
         bodyStyles: { 
             fontSize: 8, 
             textColor: blackColor,
-            lineWidth: 0.1,
+            lineWidth: 0.2, // Increased grid line width
             lineColor: borderColor
         },
         columnStyles: {
-            0: { cellWidth: 'auto' }, // Item
+            0: { cellWidth: 'auto' },
             1: { halign: 'center' },
             2: { halign: 'center' },
             3: { halign: 'center' },
@@ -319,14 +321,11 @@ const InvoicesPage: React.FC = () => {
             8: { halign: 'right' },
             9: { halign: 'right', fontStyle: 'bold' },
         },
-        // Removed 'foot' property to replace with custom box
     });
 
-    // Safely get finalY
     let finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 5 : boxY + boxHeight + 20;
 
     // --- Totals Box ---
-    // Check page overflow
     if (finalY > pageHeight - 50) {
         doc.addPage();
         finalY = 20;
@@ -335,63 +334,48 @@ const InvoicesPage: React.FC = () => {
     const totalsWidth = 80;
     const totalsX = pageWidth - 14 - totalsWidth;
     const totalsY = finalY;
-    const lineHeight = 6;
-    const totalsHeight = (lineHeight * 4) + 4; // 4 lines + padding
+    const totalsLineHeight = 6;
+    const totalsHeight = (totalsLineHeight * 4) + 4; 
 
-    // Draw Box Border
-    doc.setDrawColor(100, 149, 237); // Cornflower Blue-ish to match screenshot style roughly or keep gray
-    // Actually using the border color defined earlier for consistency unless user wants blue
-    doc.setDrawColor(borderColor); 
-    doc.setLineWidth(0.1);
+    doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]); 
+    doc.setLineWidth(0.2); // Visible boxing
     doc.rect(totalsX, totalsY, totalsWidth, totalsHeight);
 
     doc.setFontSize(9);
     doc.setTextColor(blackColor);
     
     let currentTotalY = totalsY + 6;
-    const rightAlignX = pageWidth - 18; // 14 margin + 4 padding
+    const rightAlignX = pageWidth - 18; 
     const leftAlignX = totalsX + 4;
 
-    // Taxable Value
     doc.setFont("helvetica", "normal");
     doc.text("Taxable Value:", leftAlignX, currentTotalY);
     doc.text(formatCurrencyPDF(totalTaxable), rightAlignX, currentTotalY, { align: "right" });
     
-    currentTotalY += lineHeight;
-
-    // CGST
+    currentTotalY += totalsLineHeight;
     doc.text("CGST:", leftAlignX, currentTotalY);
     doc.text(formatCurrencyPDF(totalTax / 2), rightAlignX, currentTotalY, { align: "right" });
 
-    currentTotalY += lineHeight;
-
-    // SGST
+    currentTotalY += totalsLineHeight;
     doc.text("SGST:", leftAlignX, currentTotalY);
     doc.text(formatCurrencyPDF(totalTax / 2), rightAlignX, currentTotalY, { align: "right" });
 
-    // Divider line
     currentTotalY += 2;
-    doc.line(totalsX, currentTotalY - 2 + (lineHeight/2), pageWidth - 14, currentTotalY - 2 + (lineHeight/2)); // Line between SGST and Total
+    doc.line(totalsX, currentTotalY - 2 + (totalsLineHeight/2), pageWidth - 14, currentTotalY - 2 + (totalsLineHeight/2)); 
     
-    // Grand Total
     currentTotalY += 4;
     doc.setFont("helvetica", "bold");
     doc.text("Total (INR):", leftAlignX, currentTotalY);
     doc.text(formatCurrencyPDF(grandTotal), rightAlignX, currentTotalY, { align: "right" });
 
-    // Update finalY for footer
     finalY = totalsY + totalsHeight + 10;
 
-    // --- Footer (Bank & Sign) ---
-    // Check page overflow
-    if (finalY > pageHeight - 50) {
+    if (finalY > pageHeight - 60) {
         doc.addPage();
         finalY = 20;
     }
 
     const footerY = finalY;
-    
-    // Bank Details Box
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
     doc.text("Bank Details", 14, footerY);
@@ -403,14 +387,12 @@ const InvoicesPage: React.FC = () => {
     if (companyDetails?.account_number) { doc.text(`A/c No: ${companyDetails.account_number}`, 14, bankY); bankY += 5; }
     if (companyDetails?.ifsc_code) { doc.text(`IFSC: ${companyDetails.ifsc_code}`, 14, bankY); bankY += 5; }
     
-    // Signature
-    const signX = pageWidth - 60;
-    doc.setFont("helvetica", "normal");
+    // Add "Computer Generated Invoice" text instead of Authorised Signatory
+    doc.setFont("helvetica", "italic");
     doc.setFontSize(8);
-    doc.text("Authorized Signatory", signX + 22, footerY + 25, { align: "center" });
-    doc.line(signX, footerY + 20, signX + 45, footerY + 20); // Line
+    doc.setTextColor(grayColor);
+    doc.text("This is a computer generated invoice", pageWidth - 14, footerY + 25, { align: "right" });
 
-    // Notes (Bottom of page or after content)
     if (invoice.notes) {
         const notesY = footerY + 35;
         doc.setFontSize(8);
