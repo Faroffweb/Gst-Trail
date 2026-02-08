@@ -26,7 +26,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const SidebarContent = ({ isMobile }: { isMobile: boolean }) => (
     <>
       <div className="flex items-center justify-center h-16 border-b shrink-0">
-        <span className="text-xl font-bold text-gray-800">BIOTECHCENTRE</span>
+        <span className="text-xl font-bold text-gray-800">STOCKSPHERE</span>
       </div>
       <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
         {navItems.map((item) => (

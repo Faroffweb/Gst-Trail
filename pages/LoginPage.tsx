@@ -34,7 +34,7 @@ const LoginPage: React.FC = () => {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-2xl">Login to BIOTECHCENTRE</CardTitle>
+          <CardTitle className="text-2xl">Login to STOCKSPHERE</CardTitle>
           <CardDescription>Enter your email below to receive a magic link.</CardDescription>
         </CardHeader>
         <CardContent>

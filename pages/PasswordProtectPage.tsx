@@ -8,7 +8,7 @@ interface PasswordProtectPageProps {
   onSuccess: () => void;
 }
 
-const CORRECT_PASSWORD = '9474615046';
+const CORRECT_PASSWORD = '12345';
 
 const PasswordProtectPage: React.FC<PasswordProtectPageProps> = ({ onSuccess }) => {
   const [password, setPassword] = useState('');

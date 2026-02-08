@@ -1,4 +1,4 @@
-# BIOTECHCENTRE
+# STOCKSPHERE
 
 A comprehensive management system for businesses built with React, TypeScript, and Supabase. It includes modules for inventory, customer, purchase, and invoice management, along with reporting and analytics.
 
@@ -25,7 +25,7 @@ A comprehensive management system for businesses built with React, TypeScript, a
 1.  **Create a Supabase Account:** If you don't have one, sign up at [supabase.com](https://supabase.com).
 2.  **Create a New Project:**
     *   Go to your Supabase dashboard and click "New project".
-    *   Give your project a name (e.g., `biotechcentre-app`).
+    *   Give your project a name (e.g., `stocksphere-app`).
     *   Generate a secure database password and save it.
     *   Choose a region closest to your users.
 3.  **Get API Keys:**
@@ -43,7 +43,7 @@ A comprehensive management system for businesses built with React, TypeScript, a
 1.  **Clone the Repository:**
     ```bash
     git clone <repository_url>
-    cd biotechcentre-app
+    cd stocksphere-app
     ```
 2.  **Install Dependencies:**
     ```bash
@@ -78,7 +78,7 @@ This project can be easily deployed using [Netlify](https://www.netlify.com/).
     *   Connect to your Git provider.
 
 3.  **Select Repository:**
-    *   Choose the repository for your BIOTECHCENTRE application.
+    *   Choose the repository for your STOCKSPHERE application.
 
 4.  **Configure Build Settings:**
     Netlify will likely auto-detect that you are using Vite. If not, use the following settings:
